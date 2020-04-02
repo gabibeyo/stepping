@@ -14,6 +14,10 @@ interface IStepDecorator extends Step, Closeable {
 
     void queueSubjectUpdate(Data data, String subjectType);
 
+    boolean offerQueueSubjectUpdate(Data data, String subjectType);
+
+    void clearQueueSubject();
+
     Step getStep();
 
     void setAlgoConfig(AlgoConfig algoConfig);
@@ -28,4 +32,12 @@ interface IStepDecorator extends Step, Closeable {
 
     Follower listSubjectsToFollow();
 
+    int getQSize();
+
+    int getQCapacity();
+
+    void setQ(Q q);
+
+
+    Q getQ();
 }

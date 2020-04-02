@@ -35,7 +35,6 @@ class StepDecorator implements IStepDecorator {
         logger.debug("Initializing Step - " + getStep().getId());
         container = cntr;
         step.init(container, shouter);
-        q = new Q<>(getConfig().getBoundQueueCapacity());
     }
 
     @Override
@@ -56,7 +55,21 @@ class StepDecorator implements IStepDecorator {
 
     @Override
     public void queueSubjectUpdate(Data data, String subjectType) {
+        if (StringUtils.isEmpty(subjectType) || data == null)
+            throw new SteppingException("Can't queue an empty Subject or empty Data");
         q.queue(new Message(data, subjectType));
+    }
+
+    @Override
+    public boolean offerQueueSubjectUpdate(Data data, String subjectType) {
+        if (StringUtils.isEmpty(subjectType) || data == null)
+            throw new SteppingException("Can't offer an empty Subject or empty Data");
+       return q.offer(new Message(data, subjectType));
+    }
+
+    @Override
+    public void clearQueueSubject() {
+        q.clear();
     }
 
     @Override
@@ -89,16 +102,21 @@ class StepDecorator implements IStepDecorator {
                     if (!message.getSubjectType().equals(BuiltinSubjectType.STEPPING_TIMEOUT_CALLBACK.name())) {
                         onSubjectUpdate(message.getData(), message.getSubjectType());
                     } else {
-                        onTickCallBack();
-                        cb = (CyclicBarrier) message.getData().getValue();
-                        cb.await();
+                        try {
+                            onTickCallBack();
+                        } finally {
+                            cb = (CyclicBarrier) message.getData().getValue();
+                            cb.await();
+                        }
                     }
                 }
             }
         } catch (InterruptedException | BrokenBarrierException e) {
             throw new SteppingSystemException(e);
         } catch (Exception e) {
-           throw new IdentifiableSteppingException(getStep().getId(), "DataSink FAILED", e);
+            throw new IdentifiableSteppingException(getStep().getId(), "DataSink FAILED", e);
+        } catch (Error err) {
+            throw new IdentifiableSteppingError(getStep().getId(), "DataSink FAILED - ERROR", err);
         }
     }
 
@@ -157,6 +175,26 @@ class StepDecorator implements IStepDecorator {
     }
 
     @Override
+    public int getQSize() {
+        return q.size();
+    }
+
+    @Override
+    public int getQCapacity() {
+        return q.getCapacity();
+    }
+
+    @Override
+    public void setQ(Q q) {
+        this.q = q;
+    }
+
+    @Override
+    public Q getQ() {
+        return q;
+    }
+
+    @Override
     public Step getStep() {
         return step;
     }
@@ -190,7 +228,7 @@ class StepDecorator implements IStepDecorator {
 
     @Override
     public void close() {
-        logger.info("Forwarding Kill handling to Step impl- " + getStep().getId());
+        logger.info("Forwarding Kill handling to Step - " + getStep().getId());
         onKill();
         if (cb != null)
             cb.reset();
