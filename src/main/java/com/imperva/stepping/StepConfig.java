@@ -1,15 +1,20 @@
 package com.imperva.stepping;
 
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 public class StepConfig {
+    private  String runningPeriodicCronDelay;
     private long runningInitialDelay;
     private long runningPeriodicDelay;
     private TimeUnit runningPeriodicDelayUnit;
     private int numOfNodes = 0;
+    private Supplier<Step> stepNodeSupplier;
     private boolean enableTickCallback;
     private IDistributionStrategy distributionStrategy = new All2AllDistributionStrategy();
     private int boundQueueCapacity;
+    private MonitorStepConfig monitorStepConfig;
+    private boolean keepOriginalThreadName;
 
     public StepConfig() {
         SteppingProperties stepProp = SteppingProperties.getInstance();
@@ -18,6 +23,8 @@ public class StepConfig {
         runningPeriodicDelayUnit = TimeUnit.valueOf(stepProp.getProperty("stepping.default.step.delay.unit").toUpperCase());
         enableTickCallback = new Boolean(stepProp.getProperty("stepping.default.step.enable.tickcallback"));
         boundQueueCapacity = new Integer(stepProp.getProperty("stepping.default.step.bound.queue"));
+        monitorStepConfig = new MonitorStepConfig();
+        keepOriginalThreadName = false;
     }
 
     public long getRunningInitialDelay() {
@@ -42,6 +49,14 @@ public class StepConfig {
 
     public void setNumOfNodes(int numOfNodes) {
         this.numOfNodes = numOfNodes;
+    }
+
+    public Supplier<Step> getStepNodeSupplier() {
+        return stepNodeSupplier;
+    }
+
+    public void setStepNodeSupplier(Supplier<Step> stepNodeSupplier) {
+        this.stepNodeSupplier = stepNodeSupplier;
     }
 
     public boolean isEnableTickCallback() {
@@ -74,5 +89,37 @@ public class StepConfig {
 
     public void setBoundQueueCapacity(int boundQueueCapacity) {
         this.boundQueueCapacity = boundQueueCapacity;
+    }
+
+    public String getRunningPeriodicCronDelay() {
+        return runningPeriodicCronDelay;
+    }
+
+    public void setRunningPeriodicCronDelay(String runningPeriodicCronDelay) {
+        this.runningPeriodicCronDelay = runningPeriodicCronDelay;
+    }
+
+    public Boolean getIsMonitorEnabledForStep() {
+        return monitorStepConfig.isMonitorEnabledForStep();
+    }
+
+    public int getMonitorEmmitTimeout() {
+        return monitorStepConfig.getMetadataEmmitTimeout();
+    }
+
+    public void setMonitorEmmitTimeout(int monitorEmmitTimeout) {
+        monitorStepConfig.setMetadataEmmitTimeout(monitorEmmitTimeout);
+    }
+
+    public void setMonitorEnabledForStep(Boolean isMonitorEnabledForStep) {
+        this.monitorStepConfig.setIsMonitorEnabledForStep(isMonitorEnabledForStep);
+    }
+
+    public boolean isKeepOriginalThreadName() {
+        return keepOriginalThreadName;
+    }
+
+    public void setKeepOriginalThreadName(boolean keepOriginalThreadName) {
+        this.keepOriginalThreadName = keepOriginalThreadName;
     }
 }

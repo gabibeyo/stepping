@@ -1,9 +1,9 @@
-[![Maven Central](https://img.shields.io/maven-central/v/com.imperva.stepping/stepping.svg?label=Maven%20Central)](https://search.maven.org/search?q=g:%22com.imperva.stepping%22%20AND%20a:%22stepping%22)
-
-[![Build Status](https://www.travis-ci.org/imperva/stepping.svg?branch=master)](https://www.travis-ci.org/imperva/stepping?branch=master)
+[![Maven Central](https://img.shields.io/maven-central/v/com.imperva.stepping/stepping.svg?label=Maven%20Central)](https://search.maven.org/search?q=g:%22com.imperva.stepping%22%20AND%20a:%22stepping%22) [![Build Status](https://www.travis-ci.org/imperva/stepping.svg?branch=master)](https://www.travis-ci.org/imperva/stepping?branch=master) [![Coverage Status](https://coveralls.io/repos/github/imperva/stepping/badge.svg?branch=master&2=2)](https://coveralls.io/github/imperva/stepping?branch=master&2=2)
 
 
-# Stepping 
+![Stepping Logo](https://github.com/imperva/stepping/assets/3204291/2f37015c-3613-4898-9abc-359397e25079)
+
+# Stepping
 Stepping is a framework designed to ease the implementation of data processing solutions.
 In use cases where we need to implement data or data-streaming algorithms or any other processing on data, we need to 
 first handle many different infrastructure issues.
@@ -21,6 +21,9 @@ these infrastructures is minimal as possible.
 Stepping aims to handle many of these aspects so developers can spend their time on the business logic instead of 
 solving these infrastructure and data flow issues, over and over again. 
 
+
+[Want to Chat with Stepping Framework? Click here to start a ChatGPT conversation where you can ask everything!](https://chatgpt.com/g/g-iSfgFQlJW-stepping)
+
 # Benefits
 The goal of this framework is to solve infrastructure issues encountered when developing data or data-streaming processing solution.
 Stepping is an event-driven, multithreaded, thread-safe (lockless) framework that handles the following:
@@ -32,10 +35,6 @@ Stepping is an event-driven, multithreaded, thread-safe (lockless) framework tha
 - Expose an extremely easy API to implement on top of it data-streaming processes logic 
 - Enable customers to implement custom error handling policies
 
-# Dependencies
-- slf4j-simple
-- slf4j-api
-- perf-sampler
 
 # How To Use It - First Steps
 Stepping is a Maven project (binaries are deployed in Maven Central) so you can import the projects manually or via Maven by adding the following Dependencies to your project's POM file:
@@ -44,7 +43,7 @@ Stepping is a Maven project (binaries are deployed in Maven Central) so you can 
 <dependency>
   <groupId>com.imperva.stepping</groupId>
   <artifactId>stepping</artifactId>
-  <version>3.8.0</version>
+  <version>5.1.0</version>
 </dependency>
 ~~~
 
@@ -88,6 +87,8 @@ it can be done smoothly without fearing of un-expected behaviour:
     .register(algo2)
     .register(algo3).go();
 ```
+
+See more initialization options in SteppingLauncher section.
 
 ### Set Bound Queue Capacity
 Since version 3.6.x, Stepping enables clients to bound each Step's internal queue to a specific amount of messages, in case
@@ -149,6 +150,84 @@ cases where listSubjectsToFollow() was left empty.
 followsSubject() default return value is 'true', thus by default the Step will automatically be registered 
 to *all* the Subjects in the Algo.
 
+Since version 3.9.x a new capability is introduced to the listSubjectsToFollow(Follower follower) api.
+Now when attaching a subject to the follower you can also specify the specific Distribution policy for the specific subject:
+
+```java
+
+    @Override
+    public void listSubjectsToFollow(Follower follower) {
+        IDistributionStrategy distributionStrategy = new SharedDistributionStrategy();
+        
+        follower.follow("SubjectA", sharedDistributionStrategy)
+                .follow("SubjectB", sharedDistributionStrategy)
+                .follow("SubjectC", new All2AllDistributionStrategy());
+    }
+    
+```
+In the example above we configured our Step with two different Distribution Strategies which will be used accordingly depending on the fired Subject.
+In case no specific Distribution Strategy is set, Stepping will use the regular Distribution Strategy configured via StepConfig.
+
+```java
+
+    @Override
+    public void listSubjectsToFollow(Follower follower) {
+        
+        follower.follow("SubjectA", new SharedDistributionStrategy())
+                .follow("SubjectB")
+                .follow("SubjectC")
+                .follow("SubjectD");
+    }
+    
+     public StepConfig getConfig() {
+            stepConfig.setDistributionStrategy(new All2AllDistributionStrategy())
+            return stepConfig;
+        }
+    
+```
+In the example above when SubjectA will be fired SharedDistributionStrategy() will be used to distribute the message to the different nodes
+of the Step, while All2AllDistributionStrategy() will be used for all the other Subjects.
+
+In addition from version 3.9.0 Stepping introduce a new API that allows consumers to specify the callback to use for each
+subject by using the Follower.follow() API.
+
+```java
+
+    @Override
+    public void listSubjectsToFollow(Follower follower) {
+        
+        follower.follow("SubjectA",this::onSubjectA)
+                .follow("SubjectB",this::onSubjectB)
+                .follow("SubjectB",(data)->{ 
+                    //* do something
+                });
+    }
+    
+     private onSubjectA(Data data) {
+          //* do something
+     }
+     
+     private onSubjectA(Data data) {
+          //* do something
+     }
+    
+```
+This can be used instead of the old onSubjectUpdate(Data data, String subjectType) API that requires to distinguish between 
+the different Subjects by using many if-else statements:
+
+```java
+    public void onSubjectUpdate(Data data, String subjectType) {
+        if(subjectType.equals("SubjectA")){
+            
+        } else if (subjectType.equals("SubjectB")){
+            
+        }
+    }
+```
+onSubjectUpdate() API will be still available for compatibility reasons and as a catch-all subjects, in cases you have a 
+common logic to perform on multiple Subjects.
+
+
 ### onTickCallBack
 TickCallBack is not a player in Stepping but is a fundamental functionality.
 
@@ -173,6 +252,41 @@ public class MyStep implements Step {
     }
 }
 ```
+
+From version 3.9.* Stepping supports Cron expressions as delay parameters.
+
+```java
+public class MyStep implements Step {
+
+    public StepConfig getConfig() {
+        StepConfig stepConfig = new StepConfig();
+        stepConfig.setEnableTickCallback(true);
+        stepConfig.setRunningPeriodicCronDelay("* * 01 * * *");//The TickCallBack function will be called every day at 01:00 am 
+        return stepConfig;
+    }
+}
+```
+In case both afe configured, cron expression and a numeric delay, the cron expression will be used.
+Exactly as the traditional API, you can also set the InitialDelay and the PeriodicDelayUnit.
+
+```java
+public class MyStep implements Step {
+
+    public StepConfig getConfig() {
+        StepConfig stepConfig = new StepConfig();
+        stepConfig.setEnableTickCallback(true);
+        stepConfig.setRunningInitialDelay(10);
+        stepConfig.setRunningPeriodicDelayUnit(TimeUnit.SECONDS);
+        stepConfig.setRunningPeriodicCronDelay("* * 01 * * *");
+        return stepConfig;
+    }
+}
+```
+
+For example in the case above TickCallBack will be called for the first time after 10 seconds from startup time and then 
+periodically every day at 01:00 am.
+
+
 #### Adjust onTickCallBack at runtime
 Since version 3.6.x it is possible to adjust or cancel TickCallBack timeout at runtime:
 
@@ -262,6 +376,7 @@ public class KafkaDBMergerAlgo implements Algo {
         //* init Steps
         containerRegistrar.add(new DBFetcher());
         containerRegistrar.add(new KafkaFetcher());
+        containerRegistrar.add(new Merger());
         return containerRegistrar;
     }
 
@@ -335,7 +450,7 @@ public class DBFetcher implements Step {
     @Override
     public void onRestate() {
        //This is a special function called just once in the lifecycle of a Step.
-       //Steeping allows Steps to hook into the initialization stage, before Steps execution in order to enable Steps to
+       //Stepping allows Steps to hook into the initialization stage, before Steps execution in order to enable Steps to
        //load the necessary state into the Step before execution. This can be useful when spawning new instances of Stepping
        //and we need to fist load some state in-memory before starting. 
        //Stepping will wait for all Steps to "Re-state" before continuing the initialization process
@@ -499,6 +614,11 @@ functions.
 data but their work does not depend on external events of other Steps therefore they do not register to any event.
 
 In this example "Merger" is the first Step that depends on events triggered be other Steps, "DBFetcher" and "KafkaFetcher".
+When "DBDataArrived" or "KafkaDataArrived" Subjects are 'Shouted' Stepping will call the onSubjectUpdate(Data data, String subjectType) 
+method. As you can see the "subjectType" is used to distinguish between the different Subjects.
+
+Since version 3.9.x a new API is introduced that allows consumers to specify the callback to use for each subject by using the Follower.follow() api.
+For more information please see followsSubject vs Follower section.
 
 Now you are probably curios to see how we run it. Actually it is very simple:
 
@@ -545,14 +665,18 @@ Stepping contains a single configuration file at this location:
 # Advanced Topics
 
 ### Exception & Error Handling
-Steeping provides its internal error handling for un-handled exception. 
+Stepping provides its internal error handling for un-handled exception. 
 
 The builtin implementation will try to delegate the exception handling to client's custom ExceptionHandler if provided 
 (more about this in the next paragraph), otherwise it will try to gracefully shutdown all the steps, give a change to 
 all Steps to cleanup and die gracefully.
 
+Since version 4.0.2, if a custom exception handler is provided, the framework refrains from logging errors to the log concerning 
+the exceptions which are deleted to this handler. It is up to the consumer to decide how to handle the exceptions, among which, 
+if to log an error.
+
 ### Custom ExceptionHandling
-Steeping enables consumers to provide their own Exception logic and notify the framework whether it was able to handle the
+Stepping enables consumers to provide their own Exception logic and notify the framework whether it was able to handle the
 exception (return true), in this case the builtin Exception handling is suppressed, otherwise (return false) Stepping will trigger the default behaviour.
 
 To set your CustomException Handler you just need to supply an IExceptionHandler implementation to your AlgoConfig:
@@ -577,7 +701,7 @@ To set your CustomException Handler you just need to supply an IExceptionHandler
 Since version 3.8.x Stepping supports Java Errors (i.e. OutOfMemoryError). When Stepping detects an un-handled Error it will
 try to delegate the Error to IExceptionHandler in a dedicated new function 'boolean handle(Error err)'. This method behaves exactly 
 as the 'boolean handle(Exception e)'. 
-In case 'boolean handle(Error err)' method is not implemented, the default Error handling implementation will throw a SteppingSystemCriticalException().
+In case 'boolean handle(Error err)' method is not implemented, the default Error handling implementation will throw a SteppingSystemCriticalException.
 
 ### Kill Process
 In case a single process hosts multiple Algos, Stepping expose a way to kill the entire process in case of exception, including 
@@ -661,7 +785,11 @@ public class MyStep implements Step {
 
 
 NOTE: When the Distribution strategy is set to SharedDistributionStrategy and Bound Queue Capacity is configured, the 
-configured capacity size turns to be the *total* capacity *for all* the duplicated nodes together.
+configured capacity size turns to be the capacity for each node. So if you have 4 nodes and bounded the queue to 1000 messages, 
+the total amount of messages will be 4000.
+
+Since version 3.9.x Stepping enables consumers to specify different Distribution Strategy for different Subjects.
+For more information please see 'followsSubject vs Follower' chapter.
 
 ### Steps Identity
 Since version 3.6.x each Step implements interface Identity meant to give each Step a unique friendly name. This interface 
@@ -674,7 +802,7 @@ NOTE: In case of Duplicated Nodes (see next paragraph), implementation of this t
 to your Step is required. Duplicating Steps that don't implement the Identity interface will lead to a runtime exception.
 
 ### Duplicated Nodes
-In order to maximize CPU usage, Steeping enables consumers to split the workload to multiple Threads. 
+In order to maximize CPU usage, Stepping enables consumers to split the workload to multiple Threads. 
 
 Consumers just need to specify the number of Steps nodes and internally Stepping will create the corresponding number of threads 
 that will work in-parallel on the data inorder to increase throughput:
@@ -748,7 +876,7 @@ In addition the same API allows consumers to close Stepping externally.
 
 ### Performance Sampler
 Debugging can be not so trivial in an event driven system as Stepping. 
-To facilitate the debugging process, Steeping supplies a special builtin Step (by default not enabled) called PerfSamplerStep designed to help developers understand where their 
+To facilitate the debugging process, Stepping supplies a special builtin Step (by default not enabled) called PerfSamplerStep designed to help developers understand where their 
 application spends its time. 
 
 By enabling this Step, Stepping will emit once awhile (configurable) a report that specify the
@@ -772,6 +900,135 @@ public AlgoConfig getConfig() {
 
 Currently the report will be output its findings in the default Logger.
 
+### Step Thread Name
+
+By default, stepping chooses the step thread name.
+Since version 4.0, it is possible to keep the original thread name by setting the 'keepOriginalThreadName' property in the step config.
+
+```java
+public class MyStep implements Step {
+
+    public StepConfig getConfig() {
+        stepConfig.setKeepOriginalThreadName(true);
+        return stepConfig;
+    }
+}
+```
+
+
+# SteppingLauncher
+SteppingLauncher is a new Stepping wrapper that enables enhanced capabilities related to Stepping initialization.
+Till version 3.9.1 Stepping exposed a single initialization API:
+
+```java
+new Stepping().register(new MyAlgo()).go();
+```
+
+This API is perfect for simple cases, but sometimes we need more then that. There are cases we want to initialize our algo
+but decide which specific Steps should be initialized while keeping the others "down",  override the StepConfig of some of those Steps or be able to set stop conditions
+and freeze (idle) the Main Thread till the conditions are satisfied.
+
+All these features and more, are now exposed by the SteppingLauncher API. Let's say that you want to create some Component Tests for our
+hands-on sample above, the KafkaDBMergerAlgo.  In KafkaDBMergerAlgo we had three steps - "DBFetcher", "KafkaFetcher", "Merger".
+Let's say that we want to make sure that our fetchers ("DBFetcher" & "KafkaFetcher") works as designed, but we want to keep 
+the "MergerStep" down, then we could do the following:
+
+```java
+      
+LauncherResults launcherResults = new SteppingLauncher()
+    .withAlgo(new KafkaDBMergerAlgo())
+    .stopOnSubject("DBDataArrived")   
+    .stopOnSubject("KafkaDataArrived")//* When DBDataArrived and KafkaDataArrived arrives as well, stop the run and return the results of each Subject
+    .withStep(new DBFetcher(), new StepConfig())//* Register DBFetcher Step but overrides its StepConfig
+    .withStep(new KafkaFetcher())
+    .withTimeout(10000)//* If "stopOnSubject" conditions are not satisfied in 10 seconds, stop the run and throw a SteppingLauncherTimeoutException.
+    .launch();//* Run and wait
+
+
+    //* Returning back the results of the Subjects and use them for testing:
+    Assertions.assertEquals(300, (int) launcherResults.get("DBDataArrived").getValue().size());
+    Assertions.assertEquals(400, (int) launcherResults.get("KafkaDataArrived").getValue().size);
+```
+In this example we configured the Launcher to initialize our algo with only the DBFetcher and the KafkaFetcher.
+We also overrode DBFetcher StepConfig by providing it externally.
+
+As described above, these two Steps Shouts "DBDataArrived" and "KafkaDataArrived" Subjects, so we configured the Launcher to stop
+waiting for Stepping to return as soon as these Subjects are triggered.
+In any case the Launcher will internally close Stepping and exit if the stop conditions are not satisfied, in 10 seconds.  
+
+
+SteppingLauncher brings benefits not only for Component Tests use cases, but can be used for debugging, or even in production where we have more sophisticated 
+needs. For example if we want to dynamically allocate different Algos or different Steps based on some external configuration.
+
+# Step Visualizer
+Version 4.0.0 introduces a visual way to monitor a Stepping application.
+The Visualizer help developers by exposing information about the Steps at real time.
+For example, the Visualizer draws the Steps, the Steps' Subjects, how many times a Subject was Shouted and more.
+In addition the Visualizer exposes other various statistics on each Step, for example: how many messages are in each queue, what is the everage processing time and more.
+
+### Step Visualizer Configuration
+There are 4 configurations related to the Visualizer, two of them are configurable from AlgoConfig class, and the others from StepConfig class: setInitMonitorCollector, setMonitorReportReleaseTimeout, setMonitorEnabledForStep and setMonitorEmmitTimeout.
+
+#### setMonitorReportReleaseTimeout
+This configures Steps to wait X seconds before sending the accumulated statistics about the Steps. 
+In the case below all the Steps of the Algo are configured to send the statistics (of the Steps that enabled it explicitly), every 10 seconds.
+In order to receive these events one must configure the receiving Step to 'follow' Subject 'STEPPING_STEPS_STATISTICS_READY' 
+
+```java
+public AlgoConfig getConfig() {
+        AlgoConfig algoConfig = new AlgoConfig();
+        algoConfig.setInitMonitorCollector(true);
+        algoConfig.algoConfig.setMonitorReportReleaseTimeout(10);
+        return algoConfig;
+    }
+```
+#### setMonitorEmmitTimeout
+Each Step needs to be explicitly configured to send its statistics to 'SystemStepMonitor' Step. To do that, each step 
+needs to internally initiates a new 'AgentMonitor' instance responsible for collecting the data and send the data to the 'SystemStepMonitor'.
+
+```java
+public StepConfig getConfig() {
+    StepConfig stepConfig = new StepConfig();
+    stepConfig.setMonitorEnabledForStep(true);
+    stepConfig.setMonitorEmmitTimeout(3);
+    return stepConfig;
+}
+```
+
+
+#### Additional Capabilities
+- Alongside the synchronous launch() method, which waits for the Launcher to finish the current run, the Launcher expose an async method lunchAndGo() which works like the 
+standard new Stepping()...go() method. In this case no return value is expected and the main thread dies while keeping Stepping alive.
+
+*NOTE:* Obviously the lunchAndGo() method can't be used for Component Tests as no results are expected to be returned. 
+
+- withContainerRegistrar(ContainerRegistrar containerRegistrar) is a way to entirely replace the Registrar, usable in cases we use the Registrar to keep other objects for Container usage
+
+- withShout(String subject, Data data) this method can be used in cases we register some Steps which waits for some subjects to be triggered in order to initiate.
+The Launcher will Shout all the registered Subjects right after initializing Stepping. 
+ 
+#### Support custom creation of step nodes 
+- Till 4.0.6, when setting a step to use multiple nodes, we had to have an empty constructor because stepping instantiate node via reflection which uses default constructor,
+- From 5.0.0, we add a step creation supplier property to StepConfig which return a Step, this way you can provide the step node with all properties in non default constructor.
+
+### Working with Spring
+Since version 5.0.0, with the support of custom step nodes creation it is possible to instantiate step [as spring bean],
+all you have to do is set the step supplier to step config as shown in the example below:
+dont forget to set the step bean scope to 'prototype'.
+```java
+public StepConfig getConfig() {
+    StepConfig stepConfig = new StepConfig();
+    stepConfig.setMonitorEnabledForStep(true);
+    stepConfig.setMonitorEmmitTimeout(3);
+    stepConfig.setStepNodeSupplier(this::createNode);
+    return stepConfig;
+}
+        
+Step createNode() {
+    CustomerRiskCalcStep bean = context.getBean(CustomerRiskCalcStep.class);
+    return bean;
+}
+```
 # Getting Help
 If you have questions about the library, please be sure to check out the API documentation. 
 If you still have questions, reach out me via mail gabi.beyo@imperva.com.

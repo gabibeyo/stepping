@@ -1,12 +1,11 @@
 package com.imperva.stepping;
 
-
-
 import java.io.Closeable;
+import java.util.HashMap;
 
-interface IStepDecorator extends Step, Closeable {
+public interface IStepDecorator extends Step, Closeable {
 
-    void init(Container cntr);
+    void init(Container cntr, Shouter shouter);
 
     default void onTickCallBack() {
         throw new SteppingException("onTickCallBack not implemented");
@@ -19,8 +18,6 @@ interface IStepDecorator extends Step, Closeable {
     void clearQueueSubject();
 
     Step getStep();
-
-    void setAlgoConfig(AlgoConfig algoConfig);
 
     void setDistributionNodeID(String name);
 
@@ -36,8 +33,9 @@ interface IStepDecorator extends Step, Closeable {
 
     int getQCapacity();
 
-    void setQ(Q q);
+    IDistributionStrategy getDistributionStrategy(String subjectType);
 
+    HashMap<String, SubjectUpdateEvent> getSubjectUpdateEvents();
 
-    Q getQ();
+    boolean isSystemStep();
 }

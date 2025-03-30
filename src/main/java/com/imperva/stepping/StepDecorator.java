@@ -2,23 +2,28 @@ package com.imperva.stepping;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import java.util.HashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
 
 class StepDecorator implements IStepDecorator {
     private final Logger logger = LoggerFactory.getLogger(StepDecorator.class);
     protected Container container;
-    private Q<Message> q;
+    Q<Message> q;
     private Step step;
-    private AlgoConfig algoConfig;
     private StepConfig localStepConfig;
     private String subjectDistributionID = "default";
-    private volatile boolean dead = false;
-    private Follower follower = null;
+    volatile boolean dead = false;
+    private Follower follower;
     private CyclicBarrier cb;
     private String id;
+    private Shouter shouter;
+    private HashMap<String, SubjectUpdateEvent> subjectUpdateEvents = new HashMap<>();
+    private boolean isSystemStep;
+    private Boolean isMonitorEnabledForStep;
+    private MonitorAgent monitorAgent;
 
 
     StepDecorator(Step step) {
@@ -26,15 +31,16 @@ class StepDecorator implements IStepDecorator {
     }
 
     @Override
-    public void init(Container cntr) {
-        init(cntr, cntr.getById(BuiltinTypes.STEPPING_SHOUTER.name()));
-    }
-
-    @Override
     public void init(Container cntr, Shouter shouter) {
         logger.debug("Initializing Step - " + getStep().getId());
         container = cntr;
         step.init(container, shouter);
+        q = new Q<>(getConfig().getBoundQueueCapacity());
+        this.shouter = shouter;
+        isSystemStep = isSystemStep();
+        isMonitorEnabledForStep = localStepConfig.getIsMonitorEnabledForStep();
+        if (isMonitorEnabledForStep)
+            monitorAgent = new MonitorAgent(shouter, getConfig().getMonitorEmmitTimeout());
     }
 
     @Override
@@ -64,7 +70,7 @@ class StepDecorator implements IStepDecorator {
     public boolean offerQueueSubjectUpdate(Data data, String subjectType) {
         if (StringUtils.isEmpty(subjectType) || data == null)
             throw new SteppingException("Can't offer an empty Subject or empty Data");
-       return q.offer(new Message(data, subjectType));
+        return q.offer(new Message(data, subjectType));
     }
 
     @Override
@@ -91,6 +97,19 @@ class StepDecorator implements IStepDecorator {
                     throw new InterruptedException();
                 Message message = q.take();
 
+                boolean isTickCallBack = message.getSubjectType().equals(BuiltinSubjectType.STEPPING_TIMEOUT_CALLBACK.name());
+
+                if (message.getData().isExpirable()) {
+                    boolean succeeded = message.getData().tryGrabAndExpire();
+                    if (!succeeded) {
+                        continue;
+                    }
+                }
+
+                if (isMonitorEnabledForStep && !isSystemStep) {
+                    monitorAgent.start(message.getData().getSize(), q.size());
+                }
+
                 if (message.getSubjectType().equals("POISON-PILL")) {
                     logger.info("Taking a Poison Pill. " + getStep().getId() + " is going to die");
                     dead = true;
@@ -98,17 +117,29 @@ class StepDecorator implements IStepDecorator {
                     throw new InterruptedException();
                 }
 
-                if (message != null && message.getData() != null) {
-                    if (!message.getSubjectType().equals(BuiltinSubjectType.STEPPING_TIMEOUT_CALLBACK.name())) {
-                        onSubjectUpdate(message.getData(), message.getSubjectType());
-                    } else {
-                        try {
-                            onTickCallBack();
-                        } finally {
-                            cb = (CyclicBarrier) message.getData().getValue();
-                            cb.await();
+                if (!isTickCallBack) {
+                    SubjectUpdateEvent subjectUpdateEvent = subjectUpdateEvents.get(message.getSubjectType());
+                    if (subjectUpdateEvent != null)
+                        subjectUpdateEvent.onUpdate(message.getData());
+
+                    onSubjectUpdate(message.getData(), message.getSubjectType());
+                } else {
+                    try {
+                        onTickCallBack();
+                        if (getConfig().getRunningPeriodicCronDelay() != null) {
+                            try {
+                                changeTickCallBackDelay(getConfig().getRunningPeriodicCronDelay());
+                            } catch (Exception x) {
+                                throw new SteppingException(x.toString());
+                            }
                         }
+                    } finally {
+                        cb = (CyclicBarrier) message.getData().getValue();
+                        cb.await();
                     }
+                }
+                if (isMonitorEnabledForStep && !isSystemStep) {
+                    monitorAgent.stop();
                 }
             }
         } catch (InterruptedException | BrokenBarrierException e) {
@@ -120,20 +151,29 @@ class StepDecorator implements IStepDecorator {
         }
     }
 
+    private void changeTickCallBackDelay(String cronExpression) {
+      ((ContainerService) container).changeDelay(getStep().getId(), cronExpression);
+    }
+
     private void setThreadName() {
-        Thread.currentThread().setName(getId() + ".running");
+        if (! step.getConfig().isKeepOriginalThreadName())
+            Thread.currentThread().setName(getId() + ".running");
     }
 
     @Override
     public void attachSubjects() {
         Follower follower = listSubjectsToFollow();
-        if (follower != null && follower.size() != 0) {
-            for (String subjectType : follower.get()) {
-                ISubject s = container.getById(subjectType);
+        if (follower.size() != 0) {
+            for (FollowRequest followRequest : follower.get()) {
+                ISubject s = container.getById(followRequest.getSubjectType());
                 if (s == null) {
                     throw new SteppingSystemException("Can't attach null Subject to be followed. Step id: " + this.step.getId());
                 }
                 s.attach(this);
+
+
+                if (followRequest.getSubjectUpdateEvent() != null)
+                    subjectUpdateEvents.put(followRequest.getSubjectType(), followRequest.getSubjectUpdateEvent());
             }
         } else {
             List<ISubject> subjects = container.getSonOf(ISubject.class);
@@ -185,13 +225,20 @@ class StepDecorator implements IStepDecorator {
     }
 
     @Override
-    public void setQ(Q q) {
-        this.q = q;
-    }
+    public IDistributionStrategy getDistributionStrategy(String subjectType) {
 
-    @Override
-    public Q getQ() {
-        return q;
+        IDistributionStrategy stepConfigDistributionStrategy = getConfig().getDistributionStrategy();
+
+        Optional<FollowRequest> followRequestData = listSubjectsToFollow().getFollowRequest(subjectType);
+
+        if ((!followRequestData.isPresent() || followRequestData.get().getDistributionStrategy() == null) && stepConfigDistributionStrategy == null)
+            throw new SteppingException("Distribution Strategy for Step " + step.getId() + " is missing.");
+
+        if (followRequestData.isPresent() && followRequestData.get().getDistributionStrategy() != null) {
+            return followRequestData.get().getDistributionStrategy();
+        }
+        return stepConfigDistributionStrategy;
+
     }
 
     @Override
@@ -200,15 +247,8 @@ class StepDecorator implements IStepDecorator {
     }
 
     @Override
-    public void setAlgoConfig(AlgoConfig algoConfig) {
-        if (algoConfig == null)
-            throw new IdentifiableSteppingException(this.step.getId(), "AlgoConfig is required");
-        this.algoConfig = algoConfig;
-    }
-
-    @Override
     public StepConfig getConfig() {
-        if(localStepConfig != null)
+        if (localStepConfig != null)
             return localStepConfig;
         localStepConfig = step.getConfig();
         if (localStepConfig == null)
@@ -242,6 +282,16 @@ class StepDecorator implements IStepDecorator {
     @Override
     public void setId(String id) {
         this.id = id;
+    }
+
+    @Override
+    public HashMap<String, SubjectUpdateEvent> getSubjectUpdateEvents(){
+        return subjectUpdateEvents;
+    }
+
+    @Override
+    public boolean isSystemStep() {
+        return getStep().getClass().isAnnotationPresent(SystemStep.class);
     }
 }
 

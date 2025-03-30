@@ -1,10 +1,12 @@
 package com.imperva.stepping;
 
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class Subject implements ISubject {
     private volatile ConcurrentHashMap<SubjectKey, List<IStepDecorator>> iSteps = new ConcurrentHashMap<>();
+    private List<String> stepsFollowersNames = new ArrayList<>();
     private volatile String type;
     private volatile Data data;
 
@@ -23,7 +25,7 @@ public class Subject implements ISubject {
     }
 
     @Override
-    public void publish(Object message) {
+    public void publish(Object message) {//*TODO stats NOT IN USE?
         Data data = null;
         if (!(message instanceof Data))
              data = new Data(message);
@@ -35,19 +37,19 @@ public class Subject implements ISubject {
 
     @Override
     public void publish(Data data) {
-
         Iterator<Map.Entry<SubjectKey, List<IStepDecorator>>> iterator = iSteps.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<SubjectKey, List<IStepDecorator>> pair = iterator.next();
             pair.getKey().getiDistributionStrategy().distribute(pair.getValue(), data, this.getType());
         }
         this.data = data;
-
     }
 
     @Override
     public void attach(IStepDecorator step) {
-        IDistributionStrategy distributionStrategy = step.getConfig().getDistributionStrategy();
+        stepsFollowersNames.add(step.getStep().getId());
+        IDistributionStrategy distributionStrategy = step.getDistributionStrategy(type);
+
         if (distributionStrategy == null)
             throw new SteppingException("IDistributionStrategy missing distribution id: " + step.getDistributionNodeID());
         SubjectKey subjectKey = new SubjectKey(step.getDistributionNodeID(), distributionStrategy);
@@ -59,6 +61,14 @@ public class Subject implements ISubject {
             newDistributionList.add(step);
             iSteps.put(subjectKey, newDistributionList);
         }
+    }
+
+    List<String> getCopyFollowersNames() {
+        return new ArrayList<>(stepsFollowersNames);
+    }
+
+    String getSubjectType() {
+        return type;
     }
 
     private class SubjectKey {
@@ -97,7 +107,5 @@ public class Subject implements ISubject {
         public String getDistributionNodeID() {
             return distributionNodeID;
         }
-
-
     }
 }

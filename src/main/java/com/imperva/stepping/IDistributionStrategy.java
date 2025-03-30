@@ -10,7 +10,7 @@ public abstract class IDistributionStrategy {
     private static final int MAXIMUM_OFFERS_RETRIES = 10;
     private static final int WAIT_PERIOD_MILLI = 250;
 
-    abstract void distribute(List<IStepDecorator> steps, Data data, String subjectType);
+    protected abstract void distribute(List<IStepDecorator> steps, Data data, String subjectType);
 
     protected void distribute(Distribution[] distributionList) {
         try {
@@ -31,7 +31,8 @@ public abstract class IDistributionStrategy {
         for (int inc = 0; inc < distributionList.length; inc++) {
             if (distributionList[inc] == null)
                 continue;
-            if (!distributionList[inc].getiStepDecorator().offerQueueSubjectUpdate(distributionList[inc].getData(), distributionList[inc].getSubject())) {
+            boolean isDistributed = distributionList[inc].getiStepDecorator().offerQueueSubjectUpdate(distributionList[inc].getData(), distributionList[inc].getSubject());
+            if (!isDistributed) {
                 if (busy == null) {
                     busy = new Distribution[distributionList.length];
                 }

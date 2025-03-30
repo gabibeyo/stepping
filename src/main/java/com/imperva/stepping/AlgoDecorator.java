@@ -2,12 +2,13 @@ package com.imperva.stepping;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
@@ -17,7 +18,7 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
     private Algo algo;
     private RunnersController runnersController = new RunnersController();//* todo Use CompletionService
     private volatile boolean isClosed = false;
-    private final Lock closingLock = new ReentrantLock();
+    private final ReentrantLock closingLock = new ReentrantLock();
     private final int closingLockWaitDuration = 1;//* in seconds
     private final int poisonPillWaitDuration = 3000;
 
@@ -48,6 +49,9 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
             logger.info("Initializing Steps");
             initSteps();
 
+            logger.info("Start Configuration Validation");
+            validateConfiguration();
+
             logger.info("Initializing Runners...");
             initRunners();
 
@@ -59,9 +63,6 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
 
             logger.info("Starting Restate stage...");
             restate();
-
-            logger.debug("Q dependency injection");
-            QDependencyInjection();
 
             logger.debug("Run Steps...");
             wakenRunners();
@@ -77,25 +78,20 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
         }
     }
 
-    private void QDependencyInjection() {//*TODO Split in two loops
-        for (IStepDecorator iStepDecorator : cntr.<IStepDecorator>getSonOf(IStepDecorator.class)) {
-            Q q = new Q<>(iStepDecorator.getConfig().getBoundQueueCapacity());
-            String distributionID = iStepDecorator.getDistributionNodeID();
-            for (IStepDecorator iStepDecorator2 : cntr.<IStepDecorator>getSonOf(IStepDecorator.class)) {
-                if (iStepDecorator2.getQ() != null)
-                    continue;
-                if (iStepDecorator2.getConfig().getNumOfNodes() == 0) {
-                    iStepDecorator2.setQ(new Q<>(iStepDecorator2.getConfig().getBoundQueueCapacity()));
-                    logger.debug("Injecting regular Q with " + iStepDecorator2.getConfig().getBoundQueueCapacity() + " 'BoundQueueCapacity' to StepDecorator " + iStepDecorator2.getId());
-                    continue;
-                }
-                if (iStepDecorator2.getDistributionNodeID().equals(distributionID) && iStepDecorator2.getConfig().getDistributionStrategy() instanceof SharedDistributionStrategy) {
-                    iStepDecorator2.setQ(q);
-                    logger.debug("Injecting SharedDistributionStrategy Q with " + iStepDecorator2.getConfig().getBoundQueueCapacity() + " 'BoundQueueCapacity' to StepDecorator " + iStepDecorator2.getId());
-                } else {
-                    iStepDecorator2.setQ(new Q<>(iStepDecorator2.getConfig().getBoundQueueCapacity()));
-                }
-            }
+    private void validateConfiguration() {
+        for (IStepDecorator step : cntr.<IStepDecorator>getSonOf(IStepDecorator.class)) {
+           if(step.getDistributionNodeID().equals("default")){
+               String err = "Single Step node can be configured with All2AllDistributionStrategy only";
+               if(!(step.getConfig().getDistributionStrategy() instanceof All2AllDistributionStrategy) && !(step.getConfig().getDistributionStrategy() instanceof OfferAll2AllDistributionStrategy)){
+                   throw new SteppingException(err);
+               }
+               step.listSubjectsToFollow().get().forEach(followRequest -> {
+                   if(followRequest.getDistributionStrategy() != null && (!(followRequest.getDistributionStrategy() instanceof All2AllDistributionStrategy) && !(step.getConfig().getDistributionStrategy() instanceof OfferAll2AllDistributionStrategy))){
+                       throw new SteppingException(err);
+                   }
+               });
+
+           }
         }
     }
 
@@ -123,7 +119,7 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
             }
             cntrPublic.add(iden);
         }
-        cntrPublic.add(cntr,"__STEPPING_PRIVATE_CONTAINER__");
+        cntrPublic.add(cntr, "__STEPPING_PRIVATE_CONTAINER__");
     }
 
     private ContainerRegistrar autoSubjectsRegistration() {
@@ -131,11 +127,11 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
         for (IStepDecorator step : cntr.<IStepDecorator>getSonOf(IStepDecorator.class)) {
             Follower follower = step.listSubjectsToFollow();
             if (follower != null && follower.size() != 0) {
-                for (String subjectType : follower.get()) {
-                    ISubject s = cntr.getById(subjectType);
+                for (FollowRequest followRequest : follower.get()) {
+                    ISubject s = cntr.getById(followRequest.getSubjectType());
                     if (s == null) { //* If exist do nothing
-                        s = new Subject(subjectType);
-                        containerRegistrar.add(subjectType, s);
+                        s = new Subject(followRequest.getSubjectType());
+                        containerRegistrar.add(followRequest.getSubjectType(), s);
                     }
 
                 }
@@ -163,7 +159,12 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
                 for (int i = 1; i <= numOfNodes - 1; i++) {
                     Step currentStep = iStepDecoratorToDuplicate.getStep();
                     String currentStepId = currentStep.getId();
-                    Step duplicatedStp = (Step) Class.forName(currentStep.getClass().getName(), true, currentStep.getClass().getClassLoader()).newInstance();
+                    Step duplicatedStp;
+                    if (null != iStepDecoratorToDuplicate.getConfig().getStepNodeSupplier()) {
+                        duplicatedStp = iStepDecoratorToDuplicate.getConfig().getStepNodeSupplier().get();
+                    } else {
+                         duplicatedStp = (Step) Class.forName(currentStep.getClass().getName(), true, currentStep.getClass().getClassLoader()).newInstance();
+                    }
                     String stepID = currentStepId + "." + i;
                     try {
                         duplicatedStp.setId(stepID);
@@ -205,19 +206,29 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
 
     private ContainerRegistrar builtinContainerRegistration() {
         ContainerRegistrar containerRegistrar = new ContainerRegistrar();
-        containerRegistrar.add(BuiltinTypes.STEPPING_SHOUTER.name(), new Shouter(cntr, this));
+        containerRegistrar.add(BuiltinTypes.STEPPING_SHOUTER.name(), new Shouter("DEFAULT_EXTERNAL_SHOUTER",cntr, this));
 
         containerRegistrar.add(BuiltinSubjectType.STEPPING_DATA_ARRIVED.name(), new Subject(BuiltinSubjectType.STEPPING_DATA_ARRIVED.name()));
         containerRegistrar.add(BuiltinSubjectType.STEPPING_PUBLISH_DATA.name(), new Subject(BuiltinSubjectType.STEPPING_PUBLISH_DATA.name()));
+
+        if (getConfig().getExternalPropertiesPath() != null)
+            cntrPublic.add(new SteppingExternalProperties(getConfig().getExternalPropertiesPath()), BuiltinSubjectType.STEPPING_EXTERNAL_PROPERTIES.name());
 
         if (getConfig().getPerfSamplerStepConfig().isEnable()) {
             int interval = getConfig().getPerfSamplerStepConfig().getReportInterval();
             String packages = getConfig().getPerfSamplerStepConfig().getPackages();
             if (packages == null || packages.trim().equals(""))
                 throw new SteppingException("'packages' list field is required to initialize PerfSamplerStep");
-            containerRegistrar.add(new PerfSamplerStep(interval, packages));
+            containerRegistrar.add(new SystemStepPerfSampler(interval, packages));
         }
 
+        if(getConfig().getIsInitMonitorCollector()) {
+            System.setProperty("java.awt.headless", "false");
+            SystemStepMonitor systemStepMonitor = new SystemStepMonitor();
+            systemStepMonitor.setReportReleaseTimeout(getConfig().getMonitorReportReleaseTimeout());
+            containerRegistrar.add(systemStepMonitor);
+            containerRegistrar.add(BuiltinSubjectType.STEPPING_RUNTIME_METADATA.name(), new Subject(BuiltinSubjectType.STEPPING_RUNTIME_METADATA.name()));
+        }
         return containerRegistrar;
     }
 
@@ -273,12 +284,9 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
         AlgoConfig globConf = getConfig();
         for (IStepDecorator iStepDecorator : cntr.<IStepDecorator>getSonOf(IStepDecorator.class)) {
             if (iStepDecorator.getConfig().isEnableTickCallback()) {
-                long delay = iStepDecorator.getStep().getConfig() != null ? iStepDecorator.getStep().getConfig().getRunningPeriodicDelay() : globConf.getRunningPeriodicDelay();
-                long initialDelay = iStepDecorator.getStep().getConfig() != null ? iStepDecorator.getStep().getConfig().getRunningInitialDelay() : globConf.getRunningInitialDelay();
                 CyclicBarrier cb = new CyclicBarrier(2);
-                TimeUnit timeUnit = iStepDecorator.getConfig().getRunningPeriodicDelayUnit();
                 String runnerScheduledID = iStepDecorator.getStep().getId() + ".runningScheduled";
-                RunningScheduled runningScheduled = new RunningScheduled(runnerScheduledID, delay, initialDelay, timeUnit,
+                RunningScheduled runningScheduled = new RunningScheduled(runnerScheduledID,
                         () -> {
                             try {
                                 iStepDecorator.queueSubjectUpdate(new Data(cb), BuiltinSubjectType.STEPPING_TIMEOUT_CALLBACK.name());
@@ -290,6 +298,7 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
                             }
 
                         });
+                setRunningScheduledDelay(runningScheduled, iStepDecorator.getStep().getConfig());
                 cntr.add(runningScheduled, runnerScheduledID);
                 runnersController.addScheduledRunner(runningScheduled.getScheduledExecutorService());
             }
@@ -299,7 +308,7 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
                         iStepDecorator.openDataSink();
                     } catch (Exception e) {
                         if (!handle(e)) {
-                            logger.debug("Exception was NOT handled successfully, re-opening DataSink");
+                            logger.debug("Exception was NOT handled successfully, Step is stopped");
                             break;
                         } else {
                             logger.debug("Exception was handled, re-opening DataSink ");
@@ -336,10 +345,21 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
         }
     }
 
+
+    private void setRunningScheduledDelay(RunningScheduled runningScheduled, StepConfig stepConfig) {
+        if (stepConfig.getRunningPeriodicCronDelay() != null) {
+            runningScheduled.setDelay(stepConfig.getRunningPeriodicCronDelay(), stepConfig.getRunningInitialDelay(), stepConfig.getRunningPeriodicDelayUnit());
+        } else {
+//            long delay = iStepDecorator.getStep().getConfig() != null ? iStepDecorator.getStep().getConfig().getRunningPeriodicDelay() : globConf.getRunningPeriodicDelay();
+//            long initialDelay = iStepDecorator.getStep().getConfig() != null ? iStepDecorator.getStep().getConfig().getRunningInitialDelay() : globConf.getRunningInitialDelay();
+//            TimeUnit timeUnit = iStepDecorator.getConfig().getRunningPeriodicDelayUnit();
+            runningScheduled.setDelay(stepConfig.getRunningPeriodicDelay(), stepConfig.getRunningInitialDelay(), stepConfig.getRunningPeriodicDelayUnit());
+        }
+    }
+
     private void initSteps() {
         for (IStepDecorator step : cntr.<IStepDecorator>getSonOf(IStepDecorator.class)) {
-            step.init(cntrPublic);
-            step.setAlgoConfig(getConfig());
+            step.init(cntrPublic, new Shouter(step.getStep().getId(), cntr, this));
         }
     }
 
@@ -353,35 +373,55 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
     @Override
     public boolean handle(Exception e) {
         try {
-            if (!closingLock.tryLock(closingLockWaitDuration, TimeUnit.SECONDS))
-                return true;
+//            if (!closingLock.tryLock(closingLockWaitDuration, TimeUnit.SECONDS))
+//                return false; //* todo: in some cases  waiting threads will not handle their exceptions
 
             if (isClosed)
                 return false;
 
-            if(e instanceof SteppingExceptionError){
-                SteppingExceptionError exceptionError = (SteppingExceptionError)e;
-                Throwable error = exceptionError.getCause();
-                if(delegateExceptionHandling(error))
-                    return true;
-            } else if (delegateExceptionHandling(e))
-                return true;
+            if (delegateErrorHandling(e)) return true;
 
 
-            String error = "Exception Detected";
-            if (e instanceof IdentifiableSteppingException)
-                error += " in Step Id: " + ((IdentifiableSteppingException) e).getStepId();
-            else if (e instanceof SteppingDistributionException)
-                error += " while distributing Subject - " + ((SteppingDistributionException) e).getSubjectType();
-            logger.error(error, e);
+            String logMessage = generateLogMessage(e);
+            logger.error(logMessage, e);
+
+            if (!closingLock.tryLock() && isClosed)
+                return false;
 
             closeAndKillIfNeeded(e);
-        } catch (InterruptedException e1) {
-            logger.error("tryLock was interrupted", e);
-            return false;
+
+            isClosed = true;
+            /* this is located here and not inside finally because we want to make sure all the prev steps were taken */
+        } catch (Exception ex) {
+            logger.error("Something wrong happened while closing algo ", ex);
         } finally {
-            closingLock.unlock();
+            if (closingLock.isHeldByCurrentThread()) {
+                closingLock.unlock();
+            }
         }
+        return false;
+    }
+
+    private String generateLogMessage(Exception e) {
+        String error = "Exception Detected";
+        if (e instanceof IdentifiableSteppingException)
+            error += " in Step Id: " + ((IdentifiableSteppingException) e).getStepId();
+        else if (e instanceof SteppingDistributionException)
+            error += " while distributing Subject - " + ((SteppingDistributionException) e).getSubjectType();
+        return error;
+    }
+
+
+    private boolean delegateErrorHandling(Exception e) {
+        if (e instanceof SteppingSystemCriticalException | e instanceof SteppingSystemException) {
+            return false;
+        } else if (e instanceof SteppingExceptionError) {
+            SteppingExceptionError exceptionError = (SteppingExceptionError) e;
+            Throwable error = exceptionError.getCause();
+            if (delegateExceptionHandling(error))
+                return true;
+        } else if (delegateExceptionHandling(e))
+            return true;
         return false;
     }
 
@@ -394,13 +434,6 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
     @Override
     public void close() {
         try {
-
-            if (isClosed)
-                return;
-
-            if (!closingLock.tryLock(closingLockWaitDuration, TimeUnit.SECONDS))
-                return;
-
             if (isClosed)
                 return;
 
@@ -413,18 +446,16 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
 
             closeAlgo();
 
-            isClosed = true;
-            /* this is located here and not inside finally because we want to make sure all the prev steps were taken */
         } catch (InterruptedException e) {
             logger.error("tryLock interrupted", e);
-        } finally {
-            closingLock.unlock();
+        } catch (Exception ex) {
+            logger.error("Something wrong happened while closing algo ", ex);
         }
     }
 
     private void closeAndKillIfNeeded(Exception e) {
         try {
-            logger.error("Try to close and kill", e);
+            logger.info("Try to close and kill", e);
             close();
         } finally {
             if (containsInChain(e, SteppingSystemCriticalException.class)) {
@@ -498,7 +529,7 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
             for (IStepDecorator step : stepDecorators) {
                 step.clearQueueSubject();
                 boolean poisonSent = step.offerQueueSubjectUpdate(new Data("cyanide"), "POISON-PILL");
-                if(!poisonSent){
+                if (!poisonSent) {
                     logger.error("Could not send a poison pill for Step: " + step.getId());
                 }
             }
@@ -513,11 +544,13 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
     }
 
     private boolean delegateExceptionHandling(Throwable e) {
-        logger.info("Try delegate Exception/Error to custom Exception Handler", e);
+        logger.info("Try delegate Throwable to Custom Exception Handler", e);
         IExceptionHandler customExceptionHandler = getConfig().getCustomExceptionHandler();
         if (customExceptionHandler == null) {
-            logger.info("Custom Exception/Error Handler MISSING");
+            logger.info("Custom Exception Handler MISSING");
             return false;
+        } else {
+            logger.info("Custom Exception Handler FOUND");
         }
         try {
 
@@ -529,17 +562,17 @@ class AlgoDecorator implements IExceptionHandler, IAlgoDecorator {
             }
 
             if (!handle)
-                logger.debug("Custom Exception/Error Handler was not able to fully handle the Exception");
+                logger.debug("Custom Exception Handler was unable to fully handle the Throwable");
             else
-                logger.debug("Custom Exception/Error Handler fully handled the Exception");
+                logger.debug("Custom Exception Handler fully handled the Throwable");
 
             return handle;
         } catch (SteppingSystemCriticalException ex) {
-            logger.error("Custom Exception/Error Handler throw SteppingSystemCriticalException", ex);
+            logger.error("Custom Exception Handler threw SteppingSystemCriticalException", ex);
             closeAndKillIfNeeded(ex);
             return false;
         } catch (Exception ex) {
-            logger.error("Custom Exception/Error Handler FAILED", ex);
+            logger.error("Custom Exception Handler FAILED", ex);
             return false;
         }
     }
